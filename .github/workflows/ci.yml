@@ -1,0 +1,41 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  exercises:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Report engine version
+        run: python -c "import sqlite3, sys; print('python', sys.version.split()[0], '| sqlite', sqlite3.sqlite_version)"
+
+      - name: Every solution runs, returns rows, and passes the grader
+        run: python ci/verify_solutions.py
+
+      - name: Committed shop.db matches a fresh build
+        run: |
+          python - <<'PY'
+          import sqlite3, shutil, subprocess, sys, tempfile, os
+          before = "\n".join(sqlite3.connect("shop.db").iterdump())
+          tmp = tempfile.mkdtemp()
+          shutil.copytree("db", os.path.join(tmp, "db"))
+          subprocess.run([sys.executable, os.path.join(tmp, "db", "build.py")], check=True)
+          after = "\n".join(sqlite3.connect(os.path.join(tmp, "shop.db")).iterdump())
+          if before != after:
+              sys.exit("committed shop.db is stale — re-run: python3 db/build.py")
+          print("shop.db is in sync with db/build.py")
+          PY
