@@ -1,5 +1,5 @@
 -- @ex 1.1 ordered
-SELECT name, city, segment
+SELECT name_id, city, segment -- Added mistake to check git CI
 FROM   customers
 WHERE  country = 'Germany'
 ORDER  BY name;
