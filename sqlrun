@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""Tiny SQL shell for shop.db — no installation needed.
+
+    ./sqlrun                       interactive shell (end statements with ;)
+    ./sqlrun "SELECT * FROM ..."   run one query
+    ./sqlrun somefile.sql          run a file
+    ./sqlrun --fresh               rebuild shop.db from scratch, then exit
+
+Shell dot-commands:  .tables  .schema [table]  .quit
+Changes you make in a shell session ARE saved. `./sqlrun --fresh` undoes them.
+"""
+import os
+import sqlite3
+import subprocess
+import sys
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+DB = os.path.join(ROOT, "shop.db")
+
+
+def render(cur, max_rows=50):
+    rows = cur.fetchall()
+    if cur.description is None:
+        return f"OK ({cur.rowcount} row(s) affected)" if cur.rowcount >= 0 else "OK"
+    cols = [d[0] for d in cur.description]
+    shown = rows[:max_rows]
+    cells = [[("NULL" if v is None else
+               f"{v:.2f}" if isinstance(v, float) else str(v)) for v in r] for r in shown]
+    w = [len(c) for c in cols]
+    for r in cells:
+        w = [max(a, len(b)) for a, b in zip(w, r)]
+    line = "  ".join("-" * x for x in w)
+    out = ["  ".join(c.ljust(x) for c, x in zip(cols, w)), line]
+    out += ["  ".join(c.ljust(x) for c, x in zip(r, w)) for r in cells]
+    out.append(line)
+    out.append(f"{len(rows)} row(s)" + (f" ({max_rows} shown)" if len(rows) > max_rows else ""))
+    return "\n".join(out)
+
+
+def split_statements(sql):
+    """Split into statements on real boundaries, not on every ';' — semicolons
+    also live inside string literals and BEGIN...END trigger bodies."""
+    out, buf = [], ""
+    for ch in sql:
+        buf += ch
+        if ch == ";" and sqlite3.complete_statement(buf):
+            out.append(buf)
+            buf = ""
+    if buf.strip():
+        out.append(buf)
+    return [s for s in out if s.strip()]
+
+
+def run(con, sql):
+    try:
+        cur = con.cursor()
+        for stmt in split_statements(sql):
+            cur.execute(stmt)
+            print(render(cur))
+        con.commit()
+    except sqlite3.Error as e:
+        print(f"SQL error: {e}", file=sys.stderr)
+
+
+def dot(con, cmd):
+    if cmd in (".quit", ".exit", ".q"):
+        return False
+    if cmd == ".tables":
+        for (n,) in con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY 1"):
+            print(n)
+    elif cmd.startswith(".schema"):
+        parts = cmd.split()
+        q = ("SELECT sql FROM sqlite_master WHERE tbl_name=? AND sql IS NOT NULL"
+             if len(parts) > 1 else "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL")
+        for (s,) in (con.execute(q, (parts[1],)) if len(parts) > 1 else con.execute(q)):
+            print(s + ";\n")
+    else:
+        print("commands: .tables  .schema [table]  .quit")
+    return True
+
+
+def main():
+    args = sys.argv[1:]
+    if args and args[0] == "--fresh":
+        subprocess.run([sys.executable, os.path.join(ROOT, "db", "build.py")], check=True)
+        return
+    if not os.path.exists(DB):
+        subprocess.run([sys.executable, os.path.join(ROOT, "db", "build.py")], check=True)
+    con = sqlite3.connect(DB, isolation_level=None)  # autocommit; BEGIN/COMMIT are yours to write
+    con.execute("PRAGMA foreign_keys = ON")
+
+    if args:
+        arg = " ".join(args)
+        sql = open(arg).read() if os.path.isfile(arg) else arg
+        run(con, sql)
+        return
+
+    print("shop.db — end statements with ';'   (.tables .schema .quit)")
+    buf = ""
+    while True:
+        try:
+            line = input("sql> " if not buf else "...> ")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not buf and line.strip().startswith("."):
+            if not dot(con, line.strip()):
+                break
+            continue
+        buf += line + "\n"
+        if sqlite3.complete_statement(buf):
+            run(con, buf)
+            buf = ""
+    con.close()
+
+
+if __name__ == "__main__":
+    main()
